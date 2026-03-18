@@ -64,7 +64,7 @@ function parseStreamEvents(
         const evt = JSON.parse(line);
         console.log(`[stream] type=${evt.type} subtype=${evt.subtype ?? ''} keys=${Object.keys(evt).join(',')}`);
         if (evt.type === 'result' && evt.subtype === 'error_during_execution') {
-          console.log(`[stream] ERROR: ${JSON.stringify(evt).slice(0, 500)}`);
+          console.log(`[stream] ERROR: ${JSON.stringify(evt.errors ?? evt, null, 2)}`);
         }
         if (evt.type === 'assistant' && Array.isArray(evt.message?.content)) {
           for (const block of evt.message.content) {
