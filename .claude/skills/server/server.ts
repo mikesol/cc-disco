@@ -1,4 +1,3 @@
-import 'dotenv/config';
 import { Client, GatewayIntentBits, Events, type Message } from 'discord.js';
 import { v5 as uuidv5 } from 'uuid';
 import { spawn, type ChildProcess } from 'node:child_process';
