@@ -21,15 +21,11 @@ Discord ←→ .claude/skills/server/server.ts ←→ Claude Code processes
 
 - `Map<threadId, ChildProcess>` — which threads have a running Claude Code process
 
-### Post-restart behavior
-
-After a server restart, the process map is empty. When a message arrives in an existing thread, the server always uses `--resume <session-id>`. Since the session ID is deterministically derived from the thread ID (UUID v5 with a fixed namespace), no persistent mapping is needed. Claude Code creates a new session if none exists for that ID, or resumes the existing one.
-
 ## Thread-to-session mapping
 
-Discord thread IDs (snowflakes) are mapped to Claude Code session IDs (UUIDs) via UUID v5 with a fixed namespace and the thread ID as the name. The same thread always maps to the same session ID. No mapping file, no database, no persistent state. Survives server restarts.
+Discord thread IDs (snowflakes) are mapped to Claude Code session IDs (UUIDs) via UUID v5 with a fixed namespace and the thread ID as the name. Deterministic — the same thread always produces the same session ID. No mapping file, no database, no persistent state, survives server restarts.
 
-When a message arrives in a channel (not a thread), the server auto-creates a thread and uses that thread's ID for the session mapping.
+When a message arrives in a channel (not a thread), the server auto-creates a thread and uses that thread's ID for the session mapping. All invocations use `--resume` — Claude Code creates a new session if none exists for that ID, or resumes the existing one.
 
 ## Interruption model
 
@@ -70,13 +66,6 @@ claude -p \
 ```
 
 The user message is passed via `child_process.spawn()` args array (not shell), avoiding injection.
-
-## Two modes of operation
-
-Claude Code knows which mode it's in from context:
-
-- **Thread mode** — invoked with `-p` by the server, responding to a Discord user. This is conversation.
-- **Admin mode** — invoked interactively in the repo root. This is ops — manage the server, set up crons, configure integrations, edit CLAUDE.md.
 
 ## Skills
 
@@ -135,7 +124,6 @@ cc-disco is a GitHub template repository. Users click "Use this template" to cre
 ### Private forks add:
 - Customized `CLAUDE.md`
 - `.env` with secrets (gitignored)
-- `cron.json` with scheduled jobs
 - Any files Claude should have access to
 
 ### Pulling upstream:
