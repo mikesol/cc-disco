@@ -18,7 +18,7 @@ pnpm build
 - `CLAUDE_MODEL` — model name (default: `sonnet`)
 - `CLAUDE_BIN` — path to claude binary (default: `claude`)
 
-Set via systemd `EnvironmentFile`, `op`, or pass directly. No `.env` file — don't store secrets in plaintext.
+Set via systemd `EnvironmentFile`, `op`, or pass directly. If you must, you can also set them in `.env` and use `dotenv` to load.
 
 ## Run
 node dist/server.js
