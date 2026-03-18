@@ -2,16 +2,6 @@
 
 A minimal Discord-to-Claude-Code router. One file. No state management.
 
-## Problem
-
-Existing Discord bot frameworks for AI (OpenClaw, DiscoClaw) reimplement memory, task tracking, cron scheduling, prompt assembly, and session management — all things Claude Code already handles natively. The result is tens of thousands of lines of code with subtle bugs, state sync issues, and fragile abstractions layered on top of a runtime that doesn't need them.
-
-## Insight
-
-Claude Code already has: session resumption, compaction, memory (via files), tool use, web search, file I/O, and arbitrary code execution. The only thing it doesn't have is a Discord interface.
-
-cc-disco is that interface. Nothing more.
-
 ## Architecture
 
 ```
@@ -69,14 +59,6 @@ When a message arrives in a thread that has a running Claude Code process:
 5. Stream the response
 
 This works because Claude Code's session persistence means no work is lost — the session transcript includes everything up to the interruption point. When Claude resumes, it sees the full history plus the new message.
-
-### Why no queueing
-
-Queueing creates invisible state: what's queued, why, in what order, what if the queue grows. It's a source of bugs and confusion. Interruption is stateless and immediate — every message gets a response as fast as possible.
-
-### Why no introspection
-
-The streaming progress display eliminates the need for "what are you doing?" queries. The user can see Claude's current output (text, tool calls, thinking) in real-time via the auto-updating Discord message. If they don't like what they see, they interrupt.
 
 ## Streaming progress
 
