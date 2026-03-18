@@ -58,8 +58,10 @@ function parseStreamEvents(
       if (!line.trim()) continue;
       try {
         const evt = JSON.parse(line);
-        if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta') {
-          onDelta(evt.delta.text);
+        if (evt.type === 'assistant' && Array.isArray(evt.message?.content)) {
+          for (const block of evt.message.content) {
+            if (block.type === 'text' && block.text) onDelta(block.text);
+          }
         } else if (evt.type === 'result' && evt.result) {
           onDone(evt.result);
         }
@@ -107,7 +109,7 @@ async function handleMessage(threadId: string, content: string): Promise<void> {
 
   parseStreamEvents(
     proc,
-    (delta) => { accumulated += delta; void editReply(false); },
+    (text) => { accumulated = text; void editReply(false); },
     async (result) => {
       processes.delete(threadId);
       const final = result || accumulated || '(no output)';
