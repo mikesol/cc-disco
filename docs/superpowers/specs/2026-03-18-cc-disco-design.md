@@ -32,7 +32,6 @@ After a server restart, the process map is empty. When a message arrives in an e
 - Compaction (Claude Code handles natively)
 - Prompt assembly (CLAUDE.md in the repo is the system prompt)
 - Task tracking (the fork's CLAUDE.md defines conventions)
-- Cron/scheduling (external cron sends Discord messages or invokes Claude Code directly)
 - Tool management (Claude Code has built-in tools)
 - Rolling summaries (Claude Code compacts automatically)
 
@@ -108,6 +107,23 @@ The instruction to maintain durable state lives in CLAUDE.md, not in the server.
 
 Multiple threads can have active Claude Code processes simultaneously. Since all processes share the same filesystem and working directory, concurrent file operations could conflict. This is a known limitation — CLAUDE.md should instruct Claude to use per-thread working directories for file-heavy operations if needed.
 
+## Cron
+
+The server reads a `cron.json` file from the repo on startup. Each entry defines a schedule, a target thread, and a message:
+
+```json
+[
+  { "schedule": "0 7 * * *", "threadId": "123456", "message": "Morning vibe check — scan X trends and report" },
+  { "schedule": "0 17 * * *", "threadId": "789012", "message": "Evening vibe check — reflective digest" }
+]
+```
+
+Schedules are parsed using `croner`. When a job fires, the server sends the message to the target thread using the same code path as a user message — SIGINT any running process, resume the session, stream the response.
+
+If the thread has a running process when the cron fires, the message is prefixed with: `[Scheduled task — if you're mid-task, finish your current work first, then handle this] `. This lets Claude prioritize naturally without the server needing to understand task state.
+
+The `cron.json` file is fork-specific — different forks have different schedules. The server re-reads it on SIGHUP for live reloading without restart.
+
 ## Configuration
 
 ### `.env`
@@ -166,6 +182,7 @@ TypeScript with a single `tsc` invocation. The template includes `tsconfig.json`
 
 - `discord.js` — Discord client
 - `uuid` — UUID v5 generation for thread-to-session mapping
+- `croner` — Cron schedule parsing and execution
 - Node.js built-in `child_process` — spawning Claude Code
 
 ## File structure
@@ -174,6 +191,7 @@ TypeScript with a single `tsc` invocation. The template includes `tsconfig.json`
 cc-disco/
 ├── server.ts          # The entire application
 ├── CLAUDE.md          # System prompt / fork personality
+├── cron.json          # Scheduled jobs (fork-specific)
 ├── .env.example       # Configuration template
 ├── .env               # Actual config (gitignored)
 ├── package.json       # Dependencies
@@ -192,10 +210,3 @@ cc-disco/
 - Voice support
 - Rate limiting (single user, trust boundary is the Discord allowlist)
 - Graceful degradation (if Claude Code is down, the bot is down)
-- Heartbeat / scheduling (external cron sends Discord messages if needed)
-
-## Resolved questions
-
-1. **Message splitting** — Split into multiple messages when exceeding 2000 chars. No embeds or file uploads.
-2. **Thread naming** — Left to Discord's default (uses the first few words of the message). Not worth adding complexity.
-3. **Heartbeat** — No. External cron is the fork's responsibility. The server has no scheduling.
