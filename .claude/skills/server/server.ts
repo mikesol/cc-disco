@@ -1,0 +1,155 @@
+import 'dotenv/config';
+import { Client, GatewayIntentBits, Events, type Message } from 'discord.js';
+import { v5 as uuidv5 } from 'uuid';
+import { spawn, type ChildProcess } from 'node:child_process';
+
+// --- Config ---
+const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
+const DISCORD_ALLOW_USER_IDS = process.env.DISCORD_ALLOW_USER_IDS;
+const DISCORD_GUILD_ID = process.env.DISCORD_GUILD_ID;
+const CLAUDE_MODEL = process.env.CLAUDE_MODEL ?? 'sonnet';
+const CLAUDE_BIN = process.env.CLAUDE_BIN ?? 'claude';
+
+if (!DISCORD_TOKEN || !DISCORD_ALLOW_USER_IDS || !DISCORD_GUILD_ID) {
+  console.error('Missing required env vars: DISCORD_TOKEN, DISCORD_ALLOW_USER_IDS, DISCORD_GUILD_ID');
+  process.exit(1);
+}
+
+const allowedUsers = new Set(DISCORD_ALLOW_USER_IDS.split(',').map(s => s.trim()));
+
+// --- Session mapping ---
+const UUID_NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
+
+function threadSessionId(threadId: string): string {
+  return uuidv5(threadId, UUID_NAMESPACE);
+}
+
+// --- Process management ---
+const processes = new Map<string, ChildProcess>();
+
+function spawnClaude(sessionId: string, message: string): ChildProcess {
+  const args = [
+    '-p',
+    '--resume', sessionId,
+    '--dangerously-skip-permissions',
+    '--output-format', 'stream-json',
+    '--verbose',
+    '--model', CLAUDE_MODEL,
+    message,
+  ];
+  return spawn(CLAUDE_BIN, args, {
+    cwd: process.cwd(),
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+// --- Stream parser ---
+function parseStreamEvents(
+  proc: ChildProcess,
+  onDelta: (delta: string) => void,
+  onDone: (result: string) => void,
+): void {
+  let buffer = '';
+  proc.stderr!.on('data', () => {}); // drain stderr to prevent pipe blocking
+  proc.stdout!.on('data', (chunk: Buffer) => {
+    buffer += chunk.toString();
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const evt = JSON.parse(line);
+        if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta') {
+          onDelta(evt.delta.text);
+        } else if (evt.type === 'result' && evt.result) {
+          onDone(evt.result);
+        }
+      } catch { /* skip unparseable lines */ }
+    }
+  });
+  proc.on('exit', () => onDone(''));
+}
+
+// --- Message handler ---
+async function handleMessage(threadId: string, content: string): Promise<void> {
+  const sessionId = threadSessionId(threadId);
+  const channel = await client.channels.fetch(threadId);
+  if (!channel?.isTextBased() || !('send' in channel)) return;
+
+  // Interrupt if busy
+  const existing = processes.get(threadId);
+  if (existing) {
+    existing.kill('SIGINT');
+    await new Promise<void>((resolve) => {
+      const timeout = setTimeout(() => { existing.kill('SIGKILL'); resolve(); }, 5000);
+      existing.on('exit', () => { clearTimeout(timeout); resolve(); });
+    });
+    processes.delete(threadId);
+  }
+
+  // Send placeholder
+  const reply = await channel.send('...');
+
+  // Spawn Claude
+  const proc = spawnClaude(sessionId, content);
+  processes.set(threadId, proc);
+
+  let accumulated = '';
+  let lastEdit = 0;
+  const EDIT_INTERVAL = 1500;
+
+  const editReply = async (final: boolean) => {
+    const now = Date.now();
+    if (!final && now - lastEdit < EDIT_INTERVAL) return;
+    lastEdit = now;
+    const text = accumulated.slice(0, 2000) || '...';
+    try { await reply.edit(text); } catch { /* ignore edit failures */ }
+  };
+
+  parseStreamEvents(
+    proc,
+    (delta) => { accumulated += delta; void editReply(false); },
+    async (result) => {
+      processes.delete(threadId);
+      const final = result || accumulated || '(no output)';
+      if (final.length <= 2000) {
+        try { await reply.edit(final); } catch {}
+      } else {
+        try { await reply.edit(final.slice(0, 2000)); } catch {}
+        for (let i = 2000; i < final.length; i += 2000) {
+          try { await channel.send(final.slice(i, i + 2000)); } catch {}
+        }
+      }
+    },
+  );
+}
+
+// --- Discord client ---
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ],
+});
+
+client.once(Events.ClientReady, (c) => {
+  console.log(`Logged in as ${c.user.tag}`);
+});
+
+client.on(Events.MessageCreate, async (message: Message) => {
+  if (message.author.bot) return;
+  if (!allowedUsers.has(message.author.id)) return;
+
+  if (!message.channel.isThread()) {
+    const thread = await message.startThread({
+      name: message.content.slice(0, 100) || 'New thread',
+    });
+    await handleMessage(thread.id, message.content);
+    return;
+  }
+
+  await handleMessage(message.channel.id, message.content);
+});
+
+client.login(DISCORD_TOKEN);
