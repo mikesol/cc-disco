@@ -49,7 +49,11 @@ function parseStreamEvents(
   onDone: (result: string) => void,
 ): void {
   let buffer = '';
-  proc.stderr!.on('data', () => {}); // drain stderr to prevent pipe blocking
+  let done = false;
+  const callDone = (result: string) => { if (!done) { done = true; onDone(result); } };
+  proc.stderr!.on('data', (chunk: Buffer) => {
+    console.error('[stderr]', chunk.toString().trim());
+  });
   proc.stdout!.on('data', (chunk: Buffer) => {
     buffer += chunk.toString();
     const lines = buffer.split('\n');
@@ -58,24 +62,33 @@ function parseStreamEvents(
       if (!line.trim()) continue;
       try {
         const evt = JSON.parse(line);
+        console.log(`[stream] type=${evt.type} subtype=${evt.subtype ?? ''}`);
         if (evt.type === 'assistant' && Array.isArray(evt.message?.content)) {
           for (const block of evt.message.content) {
-            if (block.type === 'text' && block.text) onDelta(block.text);
+            if (block.type === 'text' && block.text) {
+              console.log(`[stream] text: ${block.text.slice(0, 80)}`);
+              onDelta(block.text);
+            }
           }
-        } else if (evt.type === 'result' && evt.result) {
-          onDone(evt.result);
+        } else if (evt.type === 'result') {
+          console.log(`[stream] result: ${(evt.result ?? '').slice(0, 80)}`);
+          callDone(evt.result ?? '');
         }
       } catch { /* skip unparseable lines */ }
     }
   });
-  proc.on('exit', () => onDone(''));
+  proc.on('exit', () => callDone(''));
 }
 
 // --- Message handler ---
 async function handleMessage(threadId: string, content: string): Promise<void> {
   const sessionId = threadSessionId(threadId);
+  console.log(`[handleMessage] thread=${threadId} session=${sessionId} msg=${content.slice(0, 50)}`);
   const channel = await client.channels.fetch(threadId);
-  if (!channel?.isTextBased() || !('send' in channel)) return;
+  if (!channel?.isTextBased() || !('send' in channel)) {
+    console.log(`[handleMessage] channel not text-based or no send, aborting`);
+    return;
+  }
 
   // Interrupt if busy
   const existing = processes.get(threadId);
