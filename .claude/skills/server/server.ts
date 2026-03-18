@@ -127,10 +127,7 @@ async function runClaude(
       lastSendTime = now;
       lastSentText = text;
       void sendChunked(channel, text).then(msg => {
-        if (msg) {
-          sentMessages.push(msg);
-          void msg.react('🧠');
-        }
+        if (msg) sentMessages.push(msg);
       });
     },
     async (result) => {
