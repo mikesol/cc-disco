@@ -91,6 +91,17 @@ function parseStreamEvents(
 }
 
 // --- Message handler ---
+const THINKING = '🧠';
+const DONE = '✅';
+
+async function sendChunked(channel: { send: (content: string) => Promise<unknown> }, text: string, prefix: string): Promise<void> {
+  const limit = 2000 - prefix.length - 1;
+  for (let i = 0; i < text.length; i += limit) {
+    const chunk = text.slice(i, i + limit);
+    try { await channel.send(`${prefix} ${chunk}`); } catch {}
+  }
+}
+
 async function handleMessage(threadId: string, content: string): Promise<void> {
   const sessionId = threadSessionId(threadId);
   console.log(`[handleMessage] thread=${threadId} session=${sessionId} msg=${content.slice(0, 50)}`);
@@ -111,38 +122,47 @@ async function handleMessage(threadId: string, content: string): Promise<void> {
     processes.delete(threadId);
   }
 
-  // Send placeholder
-  const reply = await channel.send('...');
+  // Start typing indicator
+  if ('sendTyping' in channel) {
+    void (channel as { sendTyping: () => Promise<unknown> }).sendTyping();
+  }
 
   // Spawn Claude
   const proc = spawnClaude(sessionId, content);
   processes.set(threadId, proc);
 
-  let accumulated = '';
-  let lastEdit = 0;
-  const EDIT_INTERVAL = 1500;
+  // Keep typing indicator alive (Discord typing expires after 10s)
+  const typingInterval = setInterval(() => {
+    if ('sendTyping' in channel) {
+      void (channel as { sendTyping: () => Promise<unknown> }).sendTyping();
+    }
+  }, 8000);
 
-  const editReply = async (final: boolean) => {
-    const now = Date.now();
-    if (!final && now - lastEdit < EDIT_INTERVAL) return;
-    lastEdit = now;
-    const text = accumulated.slice(0, 2000) || '...';
-    try { await reply.edit(text); } catch { /* ignore edit failures */ }
-  };
+  let lastSentText = '';
+  let lastSendTime = 0;
+  const EDIT_INTERVAL = 1500;
 
   parseStreamEvents(
     proc,
-    (text) => { accumulated = text; void editReply(false); },
+    (text) => {
+      const now = Date.now();
+      if (now - lastSendTime < EDIT_INTERVAL) return;
+      if (text === lastSentText) return;
+      lastSendTime = now;
+      lastSentText = text;
+      void sendChunked(channel as { send: (s: string) => Promise<unknown> }, text, THINKING);
+    },
     async (result) => {
+      clearInterval(typingInterval);
       processes.delete(threadId);
-      const final = result || accumulated || '(no output)';
-      if (final.length <= 2000) {
-        try { await reply.edit(final); } catch {}
+      const final = result || lastSentText || '(no output)';
+      if (final !== lastSentText) {
+        await sendChunked(channel as { send: (s: string) => Promise<unknown> }, final, DONE);
+      } else if (lastSentText) {
+        // Final same as last intermediary — just send a done marker
+        try { await (channel as { send: (s: string) => Promise<unknown> }).send(DONE); } catch {}
       } else {
-        try { await reply.edit(final.slice(0, 2000)); } catch {}
-        for (let i = 2000; i < final.length; i += 2000) {
-          try { await channel.send(final.slice(i, i + 2000)); } catch {}
-        }
+        await sendChunked(channel as { send: (s: string) => Promise<unknown> }, final, DONE);
       }
     },
   );
