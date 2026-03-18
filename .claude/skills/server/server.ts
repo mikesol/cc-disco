@@ -26,13 +26,10 @@ function threadSessionId(threadId: string): string {
 // --- Process management ---
 const processes = new Map<string, ChildProcess>();
 
-const knownSessions = new Set<string>();
-
-function spawnClaude(sessionId: string, message: string): ChildProcess {
-  const sessionFlag = knownSessions.has(sessionId)
+function spawnClaude(sessionId: string, message: string, useResume: boolean): ChildProcess {
+  const sessionFlag = useResume
     ? ['--resume', sessionId]
     : ['--session-id', sessionId];
-  knownSessions.add(sessionId);
   const args = [
     '-p',
     ...sessionFlag,
@@ -91,15 +88,73 @@ function parseStreamEvents(
 }
 
 // --- Message handler ---
-const THINKING = '🧠';
-const DONE = '✅';
+type SendableChannel = { send: (content: string) => Promise<{ react: (emoji: string) => Promise<unknown> }> } & { sendTyping: () => Promise<unknown> };
 
-async function sendChunked(channel: { send: (content: string) => Promise<unknown> }, text: string, prefix: string): Promise<void> {
-  const limit = 2000 - prefix.length - 1;
-  for (let i = 0; i < text.length; i += limit) {
-    const chunk = text.slice(i, i + limit);
-    try { await channel.send(`${prefix} ${chunk}`); } catch {}
+async function sendChunked(channel: SendableChannel, text: string): Promise<{ react: (emoji: string) => Promise<unknown> } | null> {
+  let lastMsg = null;
+  for (let i = 0; i < text.length; i += 2000) {
+    try { lastMsg = await channel.send(text.slice(i, i + 2000)); } catch {}
   }
+  return lastMsg;
+}
+
+async function runClaude(
+  channel: SendableChannel,
+  sessionId: string,
+  content: string,
+  useResume: boolean,
+): Promise<void> {
+  const proc = spawnClaude(sessionId, content, useResume);
+  const threadId = (channel as unknown as { id: string }).id;
+  processes.set(threadId, proc);
+
+  // Keep typing alive
+  const typingInterval = setInterval(() => {
+    void channel.sendTyping();
+  }, 8000);
+
+  let lastSentText = '';
+  let lastSendTime = 0;
+  const EDIT_INTERVAL = 1500;
+  const sentMessages: { react: (emoji: string) => Promise<unknown> }[] = [];
+
+  parseStreamEvents(
+    proc,
+    (text) => {
+      const now = Date.now();
+      if (now - lastSendTime < EDIT_INTERVAL) return;
+      if (text === lastSentText) return;
+      lastSendTime = now;
+      lastSentText = text;
+      void sendChunked(channel, text).then(msg => {
+        if (msg) {
+          sentMessages.push(msg);
+          void msg.react('🧠');
+        }
+      });
+    },
+    async (result) => {
+      clearInterval(typingInterval);
+      processes.delete(threadId);
+
+      // Check for "no conversation found" → retry with --session-id
+      if (useResume && !result && lastSentText === '') {
+        console.log(`[handleMessage] resume failed, retrying with --session-id`);
+        void channel.sendTyping();
+        return runClaude(channel, sessionId, content, false);
+      }
+
+      const final = result || lastSentText || '(no output)';
+      if (final !== lastSentText) {
+        const msg = await sendChunked(channel, final);
+        if (msg) void msg.react('✅');
+      } else {
+        // Final same as last intermediary — react ✅ on the last sent message
+        const last = sentMessages[sentMessages.length - 1];
+        if (last) void last.react('✅');
+      }
+    },
+  );
 }
 
 async function handleMessage(threadId: string, content: string): Promise<void> {
@@ -122,50 +177,11 @@ async function handleMessage(threadId: string, content: string): Promise<void> {
     processes.delete(threadId);
   }
 
-  // Start typing indicator
-  if ('sendTyping' in channel) {
-    void (channel as { sendTyping: () => Promise<unknown> }).sendTyping();
-  }
+  // Start typing
+  void (channel as unknown as SendableChannel).sendTyping();
 
-  // Spawn Claude
-  const proc = spawnClaude(sessionId, content);
-  processes.set(threadId, proc);
-
-  // Keep typing indicator alive (Discord typing expires after 10s)
-  const typingInterval = setInterval(() => {
-    if ('sendTyping' in channel) {
-      void (channel as { sendTyping: () => Promise<unknown> }).sendTyping();
-    }
-  }, 8000);
-
-  let lastSentText = '';
-  let lastSendTime = 0;
-  const EDIT_INTERVAL = 1500;
-
-  parseStreamEvents(
-    proc,
-    (text) => {
-      const now = Date.now();
-      if (now - lastSendTime < EDIT_INTERVAL) return;
-      if (text === lastSentText) return;
-      lastSendTime = now;
-      lastSentText = text;
-      void sendChunked(channel as { send: (s: string) => Promise<unknown> }, text, THINKING);
-    },
-    async (result) => {
-      clearInterval(typingInterval);
-      processes.delete(threadId);
-      const final = result || lastSentText || '(no output)';
-      if (final !== lastSentText) {
-        await sendChunked(channel as { send: (s: string) => Promise<unknown> }, final, DONE);
-      } else if (lastSentText) {
-        // Final same as last intermediary — just send a done marker
-        try { await (channel as { send: (s: string) => Promise<unknown> }).send(DONE); } catch {}
-      } else {
-        await sendChunked(channel as { send: (s: string) => Promise<unknown> }, final, DONE);
-      }
-    },
-  );
+  // Always try resume first, fall back to session-id on failure
+  await runClaude(channel as unknown as SendableChannel, sessionId, content, true);
 }
 
 // --- Discord client ---
