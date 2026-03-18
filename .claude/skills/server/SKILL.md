@@ -11,6 +11,15 @@ The Discord router lives at `.claude/skills/server/server.ts`.
 ## Build
 pnpm build
 
+## Required env vars
+- `DISCORD_TOKEN` — bot token
+- `DISCORD_ALLOW_USER_IDS` — comma-separated allowed user IDs
+- `DISCORD_GUILD_ID` — server ID
+- `CLAUDE_MODEL` — model name (default: `sonnet`)
+- `CLAUDE_BIN` — path to claude binary (default: `claude`)
+
+Set via systemd `EnvironmentFile`, `op`, or pass directly. No `.env` file — don't store secrets in plaintext.
+
 ## Run
 node dist/server.js
 
