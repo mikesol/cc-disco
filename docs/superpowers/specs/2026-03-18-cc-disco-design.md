@@ -87,7 +87,7 @@ Skills are markdown files that Claude reads when relevant. The server itself is 
 - `server.ts` — the router implementation
 
 ### `.claude/skills/cron/`
-- `SKILL.md` — how to set up scheduled tasks using `croner`, stored in a `cron.json` file checked into version control. The server reads `cron.json` on startup and re-reads on SIGHUP. When a job fires, it sends the message to the target thread using the same code path as a user message. If the thread is busy, the message is prefixed with a preamble asking Claude to finish current work first.
+- `SKILL.md` — how to set up scheduled tasks. Recommends `croner` with a `cron.json` checked into version control. Cron is not built into the server — Claude sets it up as a separate process or system crontab when the user asks for scheduled tasks.
 
 ### `.claude/skills/op/`
 - `SKILL.md` — how to use 1Password CLI (`op`) for credential management. Secrets vault, service account token, `op read` patterns.
@@ -153,7 +153,6 @@ TypeScript. `pnpm build` compiles to `dist/`.
 
 - `discord.js` — Discord client
 - `uuid` — UUID v5 generation for thread-to-session mapping
-- `croner` — cron schedule parsing and execution
 - Node.js built-in `child_process` — spawning Claude Code
 
 ## File structure
