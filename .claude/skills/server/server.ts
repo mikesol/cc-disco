@@ -26,16 +26,23 @@ function threadSessionId(threadId: string): string {
 // --- Process management ---
 const processes = new Map<string, ChildProcess>();
 
+const knownSessions = new Set<string>();
+
 function spawnClaude(sessionId: string, message: string): ChildProcess {
+  const sessionFlag = knownSessions.has(sessionId)
+    ? ['--resume', sessionId]
+    : ['--session-id', sessionId];
+  knownSessions.add(sessionId);
   const args = [
     '-p',
-    '--resume', sessionId,
+    ...sessionFlag,
     '--dangerously-skip-permissions',
     '--output-format', 'stream-json',
     '--verbose',
     '--model', CLAUDE_MODEL,
     message,
   ];
+  console.log(`[spawn] ${sessionFlag[0]} ${sessionId}`);
   return spawn(CLAUDE_BIN, args, {
     cwd: process.cwd(),
     stdio: ['ignore', 'pipe', 'pipe'],
