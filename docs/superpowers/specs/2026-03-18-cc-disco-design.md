@@ -5,7 +5,7 @@ A minimal Discord-to-Claude-Code router. One file. Everything else is skills.
 ## Architecture
 
 ```
-Discord ←→ skills/server/server.ts ←→ Claude Code processes
+Discord ←→ .claude/skills/server/server.ts ←→ Claude Code processes
                     │
                     └── One process per thread, resumed by session ID
 ```
@@ -82,14 +82,14 @@ Claude Code knows which mode it's in from context:
 
 Skills are markdown files that Claude reads when relevant. The server itself is a skill.
 
-### `skills/server/`
+### `.claude/skills/server/`
 - `SKILL.md` — what the server does, how to build and restart it
 - `server.ts` — the router implementation
 
-### `skills/cron/`
+### `.claude/skills/cron/`
 - `SKILL.md` — how to set up scheduled tasks using `croner`, stored in a `cron.json` file checked into version control. The server reads `cron.json` on startup and re-reads on SIGHUP. When a job fires, it sends the message to the target thread using the same code path as a user message. If the thread is busy, the message is prefixed with a preamble asking Claude to finish current work first.
 
-### `skills/op/`
+### `.claude/skills/op/`
 - `SKILL.md` — how to use 1Password CLI (`op`) for credential management. Secrets vault, service account token, `op read` patterns.
 
 ## Configuration
@@ -107,7 +107,7 @@ All three required variables must be set and non-empty for the server to start.
 
 ### `CLAUDE.md`
 - You're a Discord bot. Messages come to you via threads.
-- Skills are in `skills/`. Read them when relevant.
+- Skills are in `.claude/skills/`. Read them when relevant.
 - To restart the server: `systemctl --user restart cc-disco`
 - Conventions for the fork (personality, integrations, task tracking — whatever the user wants)
 
@@ -120,10 +120,10 @@ Multiple threads can have active Claude Code processes simultaneously. Since all
 cc-disco is a GitHub template repository. Users click "Use this template" to create a private repo, then customize CLAUDE.md.
 
 ### Public template contains:
-- `skills/server/server.ts` — the router
-- `skills/server/SKILL.md` — server management
-- `skills/cron/SKILL.md` — cron setup with croner
-- `skills/op/SKILL.md` — 1Password integration
+- `.claude/skills/server/server.ts` — the router
+- `.claude/skills/server/SKILL.md` — server management
+- `.claude/skills/cron/SKILL.md` — cron setup with croner
+- `.claude/skills/op/SKILL.md` — 1Password integration
 - `CLAUDE.md` — generic starting point
 - `.env.example` — configuration template
 - `package.json` — dependencies
@@ -161,7 +161,7 @@ TypeScript. `pnpm build` compiles to `dist/`.
 ```
 cc-disco/
 ├── CLAUDE.md
-├── skills/
+├── .claude/skills/
 │   ├── server/
 │   │   ├── SKILL.md
 │   │   └── server.ts
