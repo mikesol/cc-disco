@@ -47,6 +47,7 @@ Install the dependency: `npm install discord.js`
 | `CLAUDE_BIN` | no | `claude` | Path to claude binary |
 | `CC_DISCO_HOOK_PORT` | no | `9400` | Hook HTTP server port |
 | `CC_DISCO_DOCS_DIR` | no | `~/cc-disco-docs` | Directory for downloaded attachments |
+| `CC_DISCO_ALERT_CHANNEL_ID` | no | — | Channel ID for error alerts (e.g. dead targets from `/message`) |
 
 Set via `~/.env`, `/etc/environment`, or exported in shell. Exit with error if required vars are missing.
 
@@ -55,7 +56,7 @@ Set via `~/.env`, `/etc/environment`, or exported in shell. Exit with error if r
 One Node.js process, two roles:
 
 1. **Discord listener** — receives messages from allowed users, spawns Claude Code
-2. **Hook HTTP server** — receives POSTs from Claude Code hooks, flushes transcript to Discord
+2. **Hook HTTP server** — receives POSTs from Claude Code hooks, flushes transcript to Discord; also exposes a `POST /message` internal dispatch endpoint
 
 No streaming JSON parsing. Claude Code writes its transcript to disk; hooks notify the server; the server reads new lines and posts them to Discord.
 
@@ -77,21 +78,38 @@ claude -p --dangerously-skip-permissions --model <CLAUDE_MODEL> [--session-id <i
 - `cwd`: `process.cwd()`
 - `stdio`: `['ignore', 'pipe', 'pipe']` — drain stdout, log stderr to console
 
+### Internal `handleMessage(threadId, prompt)`
+
+Extract this as a named async function that:
+1. If `threadId` has an in-flight process, calls `killInflight(threadId)` first
+2. Calls `spawnClaude(threadId, prompt)`
+
+Both the Discord `messageCreate` handler and the `POST /message` HTTP route call this function.
+
 ### In-flight state (keyed by thread ID)
 
 Track per-thread: `{ proc, typingInterval, lastFlushedLine, transcriptPath, lastMsgRef, exited, hookDone }`
 
 Cleanup (clear typing interval, delete from map) only when **both** `exited` and `hookDone` are true. This prevents a race between proc exit and the Stop hook.
 
-### Sent-message ID tracking
-
-Maintain a module-level `Set` of Discord message IDs that the server itself has posted (e.g. `sentMessageIds`). Whenever `channel.send()` returns a message, add its ID to this set. In `MessageCreate`, skip and remove any message whose ID is in this set. This prevents Claude's own responses from being re-processed as new prompts.
-
 ### Hook HTTP server
 
 Listens on `127.0.0.1:${HOOK_PORT}`. Always responds `200 {}`.
 
 **Important**: To get the Discord channel object, use `await client.channels.fetch(threadId)` — not `client.channels.cache.get(threadId)`. The cache may be empty after a restart, causing hooks to silently drop.
+
+The server handles two routes:
+
+#### `POST /message` — internal dispatch
+
+Body: `{ threadId, message }` where `threadId` may be a thread ID or a channel ID.
+
+1. Fetch the target with `client.channels.fetch(threadId)`. If the fetch fails, post an alert to `CC_DISCO_ALERT_CHANNEL_ID` (if set) and return:
+   > ⚠️ `/message` failed: could not fetch channel/thread `<id>`. Message was: `"<message>"`
+2. If the target is a channel (not a thread), create a new thread via `channel.threads.create({ name: message.slice(0, 100) || 'Scheduled' })` and use the new thread's ID going forward
+3. Call `handleMessage(resolvedThreadId, message)`
+
+#### `POST /hooks` (any other path) — Claude Code hooks
 
 Hook payload fields used:
 - `hook_event_name` — `PreToolUse`, `PostToolUse`, or `Stop`
@@ -101,7 +119,7 @@ Hook payload fields used:
 
 **On first hook with `transcript_path`**: store the path, and set `lastFlushedLine` to the current line count of the file. This skips pre-existing conversation history — only new output from this run should be relayed.
 
-**On `PreToolUse` / `PostToolUse`**: `await` the flush of new transcript lines to Discord (see below). Awaiting ensures `lastMsgRef` is up-to-date before the next hook fires.
+**On `PreToolUse` / `PostToolUse`**: flush new transcript lines to Discord (see below).
 
 **On `Stop`**:
 1. Clear typing interval immediately
@@ -136,9 +154,8 @@ Use `client.once('clientReady', ...)` — not `'ready'`, which is deprecated in 
 
 **Message filter** — skip the message if any of the following:
 - `message.guildId !== DISCORD_GUILD_ID`
-- `message.author.id` is in `sentMessageIds` (remove it from the set and skip — this is a Claude response echoing back)
-- `message.author.bot && message.author.id !== client.user.id` — ignore other bots, but allow own bot messages so cron-posted prompts are processed
-- `!allowedUsers.has(message.author.id) && message.author.id !== client.user.id` — require allowed user IDs, except for own-bot cron messages
+- `message.author.bot` — ignore all bot messages (responses from this bot are not re-processed; cron and other automated triggers use the `POST /message` endpoint instead)
+- `!allowedUsers.has(message.author.id)`
 
 **Attachments**: download each to `DOCS_DIR` as `<timestamp>-<originalname>`. Append to prompt:
 ```
@@ -207,6 +224,11 @@ node .claude/skills/server/server.js
 systemctl --user restart cc-disco
 systemctl --user status cc-disco
 journalctl --user -u cc-disco -f
+
+# Trigger a message programmatically (test /message endpoint)
+curl -s -X POST http://127.0.0.1:9400/message \
+  -H 'Content-Type: application/json' \
+  -d '{"threadId":"<id>","message":"hello"}'
 ```
 
 ## Acceptance criteria
@@ -221,5 +243,6 @@ Verify each after building:
 6. The ✅ reaction appears on Claude's final message after it stops
 7. Attachments sent with a message appear as file paths in the prompt (logged on spawn)
 8. `journalctl --user -u cc-disco -f` streams logs cleanly after systemd install
-9. A message posted to a thread by the bot itself (simulating cron) is processed and Claude responds — confirm with logs that `--resume` is used and a reply appears
-10. Claude's response to a cron-posted message does NOT trigger another spawn — the ✅ reaction appears once and processing stops
+9. `curl -X POST http://127.0.0.1:9400/message -H 'Content-Type: application/json' -d '{"threadId":"<id>","message":"ping"}'` triggers Claude to respond in that thread
+10. A `POST /message` with a deleted/invalid channel ID posts an alert to `CC_DISCO_ALERT_CHANNEL_ID` (if set) and does not crash the server
+11. Claude's responses do NOT trigger additional Claude spawns (strict bot filter holds)

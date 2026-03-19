@@ -1,3 +1,7 @@
 node_modules/
 .env
 session-map.json
+node_modules
+package-lock.json
+package.json
+.claude/settings.json
