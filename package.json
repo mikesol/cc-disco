@@ -1,18 +1,12 @@
 {
   "name": "cc-disco",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
-    "build": "tsc",
-    "start": "node dist/server.js"
+    "start": "node .claude/skills/server/server.js"
   },
   "dependencies": {
     "discord.js": "^14.18.0",
     "uuid": "^11.1.0"
-  },
-  "devDependencies": {
-    "@types/node": "^22.0.0",
-    "@types/uuid": "^10.0.0",
-    "typescript": "^5.7.0"
   }
 }
