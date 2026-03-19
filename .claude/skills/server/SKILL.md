@@ -83,6 +83,10 @@ Track per-thread: `{ proc, typingInterval, lastFlushedLine, transcriptPath, last
 
 Cleanup (clear typing interval, delete from map) only when **both** `exited` and `hookDone` are true. This prevents a race between proc exit and the Stop hook.
 
+### Sent-message ID tracking
+
+Maintain a module-level `Set` of Discord message IDs that the server itself has posted (e.g. `sentMessageIds`). Whenever `channel.send()` returns a message, add its ID to this set. In `MessageCreate`, skip and remove any message whose ID is in this set. This prevents Claude's own responses from being re-processed as new prompts.
+
 ### Hook HTTP server
 
 Listens on `127.0.0.1:${HOOK_PORT}`. Always responds `200 {}`.
@@ -126,7 +130,11 @@ If a message arrives for a thread that already has an in-flight process:
 Required intents: `Guilds`, `GuildMessages`, `MessageContent`.
 > **Note**: `MessageContent` is a privileged intent — it must be explicitly enabled in the Discord Developer Portal under the bot's settings.
 
-Filter: ignore bot messages, non-allowed users, wrong guild.
+**Message filter** — skip the message if any of the following:
+- `message.guildId !== DISCORD_GUILD_ID`
+- `message.author.id` is in `sentMessageIds` (remove it from the set and skip — this is a Claude response echoing back)
+- `message.author.bot && message.author.id !== client.user.id` — ignore other bots, but allow own bot messages so cron-posted prompts are processed
+- `!allowedUsers.has(message.author.id) && message.author.id !== client.user.id` — require allowed user IDs, except for own-bot cron messages
 
 **Attachments**: download each to `DOCS_DIR` as `<timestamp>-<originalname>`. Append to prompt:
 ```
@@ -209,3 +217,5 @@ Verify each after building:
 6. The ✅ reaction appears on Claude's final message after it stops
 7. Attachments sent with a message appear as file paths in the prompt (logged on spawn)
 8. `journalctl --user -u cc-disco -f` streams logs cleanly after systemd install
+9. A message posted to a thread by the bot itself (simulating cron) is processed and Claude responds — confirm with logs that `--resume` is used and a reply appears
+10. Claude's response to a cron-posted message does NOT trigger another spawn — the ✅ reaction appears once and processing stops

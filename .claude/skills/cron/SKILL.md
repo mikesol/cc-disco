@@ -32,7 +32,7 @@ The cron runner is a single Node.js ESM script. It:
 
 Env var: `DISCORD_TOKEN` — required, exit with error if missing.
 
-> **Note**: Messages posted by the bot token arrive with `author.bot = true`. The cc-disco server ignores bot messages by default. To have cron messages handled by the server, either use a webhook URL instead of the bot token, or modify the server's `MessageCreate` handler to whitelist the bot's own user ID.
+> **How this works with the server**: The server whitelists messages from its own bot user ID, so cron-posted messages are processed as normal prompts. Claude's responses are tracked by message ID and skipped in `MessageCreate`, preventing a feedback loop.
 
 ## cron.json format
 
@@ -94,3 +94,4 @@ journalctl --user -u cc-disco-cron -f
 2. A job fires at its scheduled time and the message appears in the target Discord thread
 3. Sending `SIGHUP` reloads `cron.json` without restarting the process (logged)
 4. Missing or malformed `cron.json` logs a warning but doesn't crash the runner
+5. Claude's response to a cron-triggered message does NOT itself trigger another Claude spawn (no feedback loop)
