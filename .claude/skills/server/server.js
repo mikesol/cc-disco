@@ -1,4 +1,5 @@
 import { Client, GatewayIntentBits, Events } from 'discord.js';
+import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { readFileSync, writeFileSync, mkdirSync, createWriteStream, existsSync } from 'node:fs';
@@ -104,26 +105,9 @@ const hookServer = createServer((req, res) => {
       const event = data.hook_event_name;
       const claudeSessionId = data.session_id;
 
-      // Find thread by claude session ID
-      let threadId = threadForClaudeSession(claudeSessionId);
-      // Check inflight by claudeSessionId
-      if (!threadId) {
-        for (const [tid, state] of inflight) {
-          if (state.claudeSessionId === claudeSessionId) { threadId = tid; break; }
-        }
-      }
-      // For new sessions (claudeSessionId was null), match by finding an
-      // inflight entry with no claudeSessionId yet and adopt this one
-      if (!threadId) {
-        for (const [tid, state] of inflight) {
-          if (!state.claudeSessionId) {
-            threadId = tid;
-            state.claudeSessionId = claudeSessionId;
-            break;
-          }
-        }
-      }
-
+      // Find thread by session ID — we always know the mapping because
+      // we save it to sessionMap BEFORE spawning
+      const threadId = threadForClaudeSession(claudeSessionId);
       const state = threadId ? inflight.get(threadId) : null;
       if (!state) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -138,13 +122,6 @@ const hookServer = createServer((req, res) => {
           const existingLines = readFileSync(data.transcript_path, 'utf-8').trim().split('\n');
           state.lastFlushedLine = existingLines.length;
         } catch { state.lastFlushedLine = 0; }
-      }
-
-      // Save session ID to map (claude picks the ID, we persist it)
-      if (claudeSessionId && !sessionMap[threadId]) {
-        sessionMap[threadId] = claudeSessionId;
-        saveSessionMap();
-        console.log(`[session] mapped thread ${threadId} → ${claudeSessionId}`);
       }
 
       if (event === 'PostToolUse' || event === 'PreToolUse') {
@@ -192,7 +169,11 @@ function spawnClaude(threadId, message) {
     args.push('--resume', existingSessionId);
     console.log(`[spawn] --resume ${existingSessionId} for thread ${threadId}`);
   } else {
-    console.log(`[spawn] new session for thread ${threadId}`);
+    const newSessionId = randomUUID();
+    sessionMap[threadId] = newSessionId;
+    saveSessionMap();
+    args.push('--session-id', newSessionId);
+    console.log(`[spawn] --session-id ${newSessionId} for thread ${threadId}`);
   }
 
   args.push(message);
@@ -210,7 +191,6 @@ function spawnClaude(threadId, message) {
   inflight.set(threadId, {
     proc,
     typingInterval,
-    claudeSessionId: existingSessionId || null,
     lastFlushedLine: 0,
     transcriptPath: null,
     lastMsgRef: null,
