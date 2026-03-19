@@ -33,6 +33,7 @@ The Discord router is `.claude/skills/server/server.js`.
 - `CLAUDE_MODEL` — model name (default: `sonnet`)
 - `CLAUDE_BIN` — path to claude binary (default: `claude`)
 - `CC_DISCO_HOOK_PORT` — hook HTTP port (default: `9400`)
+- `CC_DISCO_DOCS_DIR` — directory for downloaded attachments (default: `~/cc-disco-docs`)
 
 Set via systemd `EnvironmentFile`, `op`, or pass directly. If you must, you can also set them in `.env` and use `dotenv` to load.
 

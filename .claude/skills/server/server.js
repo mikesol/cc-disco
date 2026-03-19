@@ -2,7 +2,9 @@ import { Client, GatewayIntentBits, Events } from 'discord.js';
 import { v5 as uuidv5 } from 'uuid';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdirSync, createWriteStream } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
+import { join } from 'node:path';
 
 // --- Config ---
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
@@ -11,6 +13,8 @@ const DISCORD_GUILD_ID = process.env.DISCORD_GUILD_ID;
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL ?? 'sonnet';
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? 'claude';
 const HOOK_PORT = parseInt(process.env.CC_DISCO_HOOK_PORT ?? '9400', 10);
+const DOCS_DIR = process.env.CC_DISCO_DOCS_DIR ?? join(process.env.HOME ?? '.', 'cc-disco-docs');
+mkdirSync(DOCS_DIR, { recursive: true });
 
 if (!DISCORD_TOKEN || !DISCORD_ALLOW_USER_IDS || !DISCORD_GUILD_ID) {
   console.error('Missing required env vars: DISCORD_TOKEN, DISCORD_ALLOW_USER_IDS, DISCORD_GUILD_ID');
@@ -214,6 +218,25 @@ function spawnClaude(sessionId, threadId, message) {
   doSpawn(true);
 }
 
+// --- Attachment handling ---
+async function downloadAttachments(attachments) {
+  const paths = [];
+  for (const [, att] of attachments) {
+    const filename = `${Date.now()}-${att.name}`;
+    const filepath = join(DOCS_DIR, filename);
+    try {
+      const res = await fetch(att.url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await pipeline(res.body, createWriteStream(filepath));
+      paths.push(filepath);
+      console.log(`[attach] saved ${att.name} → ${filepath}`);
+    } catch (e) {
+      console.error(`[attach] failed to download ${att.name}: ${e.message}`);
+    }
+  }
+  return paths;
+}
+
 // --- Message handling ---
 async function handleMessage(threadId, content) {
   const sessionId = threadSessionId(threadId);
@@ -247,19 +270,30 @@ client.on(Events.MessageCreate, async (message) => {
   if (!allowedUsers.has(message.author.id)) return;
   if (message.guildId !== DISCORD_GUILD_ID) return;
 
+  // Download attachments
+  let prompt = message.content || '';
+  if (message.attachments.size > 0) {
+    const paths = await downloadAttachments(message.attachments);
+    if (paths.length > 0) {
+      prompt += '\n\n[Attached files]\n' + paths.map(p => `- ${p}`).join('\n');
+    }
+  }
+
+  if (!prompt.trim()) return; // skip empty messages with no attachments
+
   if (!message.channel.isThread()) {
     try {
       const thread = await message.startThread({
         name: message.content.slice(0, 100) || 'New thread',
       });
-      await handleMessage(thread.id, message.content);
+      await handleMessage(thread.id, prompt);
     } catch (e) {
       console.error(`[thread] failed to create thread: ${e.message}`);
     }
     return;
   }
 
-  await handleMessage(message.channel.id, message.content);
+  await handleMessage(message.channel.id, prompt);
 });
 
 client.login(DISCORD_TOKEN);
