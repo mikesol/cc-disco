@@ -92,12 +92,15 @@ const hookServer = createServer((req, res) => {
       const data = JSON.parse(body);
       const event = data.hook_event_name;
       const hookSessionId = data.session_id;
+      console.log(`[hook] ${event} session=${hookSessionId} tool=${data.tool_name || '-'}`);
+      console.log(`[hook] known sessions: ${[...sessions.keys()].join(', ') || 'none'}`);
 
       // Find our session by claude's session_id
       let session = null;
       for (const [sid, s] of sessions) {
         if (sid === hookSessionId) { session = s; break; }
       }
+      if (!session) console.log(`[hook] no matching session found for ${hookSessionId}`);
 
       // Store transcript path on first hook
       if (session && data.transcript_path && !session.transcriptPath) {
