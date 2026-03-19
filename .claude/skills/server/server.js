@@ -108,10 +108,12 @@ const hookServer = createServer((req, res) => {
   let body = '';
   req.on('data', c => body += c);
   req.on('end', async () => {
+    console.log(`[http] received ${body.length} bytes`);
     try {
       const data = JSON.parse(body);
       const event = data.hook_event_name;
       const claudeSessionId = data.session_id;
+      console.log(`[hook] ${event} session=${claudeSessionId} thread=${threadForClaudeSession(claudeSessionId) || 'unknown'}`);
 
       // Find thread by session ID — we always know the mapping because
       // we save it to sessionMap BEFORE spawning
