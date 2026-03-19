@@ -104,18 +104,28 @@ const hookServer = createServer((req, res) => {
       const event = data.hook_event_name;
       const claudeSessionId = data.session_id;
 
-      // Find thread by claude session ID, or by checking inflight
+      // Find thread by claude session ID
       let threadId = threadForClaudeSession(claudeSessionId);
-      // Also check inflight in case session map hasn't been saved yet (new session)
+      // Check inflight by claudeSessionId
       if (!threadId) {
         for (const [tid, state] of inflight) {
           if (state.claudeSessionId === claudeSessionId) { threadId = tid; break; }
         }
       }
+      // For new sessions (claudeSessionId was null), match by finding an
+      // inflight entry with no claudeSessionId yet and adopt this one
+      if (!threadId) {
+        for (const [tid, state] of inflight) {
+          if (!state.claudeSessionId) {
+            threadId = tid;
+            state.claudeSessionId = claudeSessionId;
+            break;
+          }
+        }
+      }
 
       const state = threadId ? inflight.get(threadId) : null;
       if (!state) {
-        // Hook from a non-server claude invocation (e.g., admin mode) — ignore
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end('{}');
         return;
