@@ -1,8 +1,7 @@
 import { Client, GatewayIntentBits, Events } from 'discord.js';
-import { v5 as uuidv5 } from 'uuid';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { readFileSync, mkdirSync, createWriteStream } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, createWriteStream, existsSync } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import { join } from 'node:path';
 
@@ -14,6 +13,7 @@ const CLAUDE_MODEL = process.env.CLAUDE_MODEL ?? 'sonnet';
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? 'claude';
 const HOOK_PORT = parseInt(process.env.CC_DISCO_HOOK_PORT ?? '9400', 10);
 const DOCS_DIR = process.env.CC_DISCO_DOCS_DIR ?? join(process.env.HOME ?? '.', 'cc-disco-docs');
+const SESSION_MAP_FILE = join(process.cwd(), 'session-map.json');
 mkdirSync(DOCS_DIR, { recursive: true });
 
 if (!DISCORD_TOKEN || !DISCORD_ALLOW_USER_IDS || !DISCORD_GUILD_ID) {
@@ -22,12 +22,18 @@ if (!DISCORD_TOKEN || !DISCORD_ALLOW_USER_IDS || !DISCORD_GUILD_ID) {
 }
 
 const allowedUsers = new Set(DISCORD_ALLOW_USER_IDS.split(',').map(s => s.trim()));
-const UUID_NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
-const threadSessionId = (threadId) => uuidv5(threadId, UUID_NAMESPACE);
 
-// --- State ---
-// Maps session ID → { threadId, proc, typingInterval, lastFlushedLine, lastMsgRef }
-const sessions = new Map();
+// --- Session map (thread ID → claude session ID, persisted to disk) ---
+let sessionMap = {};
+try { sessionMap = JSON.parse(readFileSync(SESSION_MAP_FILE, 'utf-8')); } catch {}
+
+function saveSessionMap() {
+  try { writeFileSync(SESSION_MAP_FILE, JSON.stringify(sessionMap, null, 2)); } catch {}
+}
+
+// --- In-flight state (keyed by thread ID) ---
+// { proc, typingInterval, lastFlushedLine, transcriptPath, lastMsgRef }
+const inflight = new Map();
 
 // --- Discord client ---
 const client = new Client({
@@ -39,16 +45,15 @@ const client = new Client({
 });
 
 // --- Transcript flushing ---
-function flushTranscript(sessionId) {
-  const session = sessions.get(sessionId);
-  if (!session) return [];
+function flushTranscript(threadId) {
+  const state = inflight.get(threadId);
+  if (!state?.transcriptPath) return [];
 
   try {
-    const lines = readFileSync(session.transcriptPath, 'utf-8').trim().split('\n');
+    const lines = readFileSync(state.transcriptPath, 'utf-8').trim().split('\n');
     const texts = [];
-    for (let i = session.lastFlushedLine; i < lines.length; i++) {
+    for (let i = state.lastFlushedLine; i < lines.length; i++) {
       const entry = JSON.parse(lines[i]);
-      // assistant entries nest content under .message.content
       const content = entry.message?.content ?? entry.content;
       if (Array.isArray(content)) {
         for (const block of content) {
@@ -56,10 +61,10 @@ function flushTranscript(sessionId) {
         }
       }
     }
-    session.lastFlushedLine = lines.length;
+    state.lastFlushedLine = lines.length;
     return texts;
   } catch (e) {
-    console.error(`[flush] error reading transcript: ${e.message}`);
+    console.error(`[flush] error: ${e.message}`);
     return [];
   }
 }
@@ -71,11 +76,8 @@ async function sendToDiscord(threadId, texts) {
   let lastMsg = null;
   for (const text of texts) {
     if (!text.trim()) continue;
-    // chunk to 2000 chars
     for (let i = 0; i < text.length; i += 2000) {
-      try {
-        lastMsg = await channel.send(text.slice(i, i + 2000));
-      } catch (e) {
+      try { lastMsg = await channel.send(text.slice(i, i + 2000)); } catch (e) {
         console.error(`[send] error: ${e.message}`);
       }
     }
@@ -84,6 +86,15 @@ async function sendToDiscord(threadId, texts) {
 }
 
 // --- Hook HTTP server ---
+// Hooks are keyed by Claude's session_id. We need to find the thread ID.
+// Reverse lookup: claude session ID → thread ID
+function threadForClaudeSession(claudeSessionId) {
+  for (const [threadId, sid] of Object.entries(sessionMap)) {
+    if (sid === claudeSessionId) return threadId;
+  }
+  return null;
+}
+
 const hookServer = createServer((req, res) => {
   let body = '';
   req.on('data', c => body += c);
@@ -91,55 +102,63 @@ const hookServer = createServer((req, res) => {
     try {
       const data = JSON.parse(body);
       const event = data.hook_event_name;
-      const hookSessionId = data.session_id;
-      console.log(`[hook] ${event} session=${hookSessionId} tool=${data.tool_name || '-'}`);
-      console.log(`[hook] known sessions: ${[...sessions.keys()].join(', ') || 'none'}`);
+      const claudeSessionId = data.session_id;
 
-      // Find our session by claude's session_id
-      let session = null;
-      for (const [sid, s] of sessions) {
-        if (sid === hookSessionId) { session = s; break; }
+      // Find thread by claude session ID, or by checking inflight
+      let threadId = threadForClaudeSession(claudeSessionId);
+      // Also check inflight in case session map hasn't been saved yet (new session)
+      if (!threadId) {
+        for (const [tid, state] of inflight) {
+          if (state.claudeSessionId === claudeSessionId) { threadId = tid; break; }
+        }
       }
-      if (!session) console.log(`[hook] no matching session found for ${hookSessionId}`);
+
+      const state = threadId ? inflight.get(threadId) : null;
+      if (!state) {
+        // Hook from a non-server claude invocation (e.g., admin mode) — ignore
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('{}');
+        return;
+      }
 
       // Store transcript path on first hook — skip existing content
-      if (session && data.transcript_path && !session.transcriptPath) {
-        session.transcriptPath = data.transcript_path;
-        // Initialize lastFlushedLine to current end of transcript
-        // so we only flush NEW assistant text from this turn
+      if (data.transcript_path && !state.transcriptPath) {
+        state.transcriptPath = data.transcript_path;
         try {
           const existingLines = readFileSync(data.transcript_path, 'utf-8').trim().split('\n');
-          session.lastFlushedLine = existingLines.length;
-          console.log(`[hook] transcript initialized, skipping ${existingLines.length} existing lines`);
-        } catch { session.lastFlushedLine = 0; }
+          state.lastFlushedLine = existingLines.length;
+        } catch { state.lastFlushedLine = 0; }
       }
 
-      if ((event === 'PostToolUse' || event === 'PreToolUse') && session) {
-        // Flush any assistant text from transcript
-        const texts = flushTranscript(hookSessionId);
+      // Save session ID to map (claude picks the ID, we persist it)
+      if (claudeSessionId && !sessionMap[threadId]) {
+        sessionMap[threadId] = claudeSessionId;
+        saveSessionMap();
+        console.log(`[session] mapped thread ${threadId} → ${claudeSessionId}`);
+      }
+
+      if (event === 'PostToolUse' || event === 'PreToolUse') {
+        const texts = flushTranscript(threadId);
         if (texts.length > 0) {
-          const lastMsg = await sendToDiscord(session.threadId, texts);
-          if (lastMsg) session.lastMsgRef = lastMsg;
+          const lastMsg = await sendToDiscord(threadId, texts);
+          if (lastMsg) state.lastMsgRef = lastMsg;
         }
       }
 
-      if (event === 'Stop' && session) {
-        // Final flush: use last_assistant_message as authoritative
+      if (event === 'Stop') {
         const finalText = data.last_assistant_message || '';
         if (finalText.trim()) {
-          const lastMsg = await sendToDiscord(session.threadId, [finalText]);
+          const lastMsg = await sendToDiscord(threadId, [finalText]);
           if (lastMsg) {
-            session.lastMsgRef = lastMsg;
+            state.lastMsgRef = lastMsg;
             await lastMsg.react('✅').catch(() => {});
           }
-        } else if (session.lastMsgRef) {
-          // No new text but we sent intermediaries — mark the last one done
-          await session.lastMsgRef.react('✅').catch(() => {});
+        } else if (state.lastMsgRef) {
+          await state.lastMsgRef.react('✅').catch(() => {});
         }
 
-        // Stop typing
-        if (session.typingInterval) clearInterval(session.typingInterval);
-        sessions.delete(hookSessionId);
+        if (state.typingInterval) clearInterval(state.typingInterval);
+        inflight.delete(threadId);
       }
     } catch (e) {
       console.error(`[hook] error: ${e.message}`);
@@ -155,77 +174,48 @@ hookServer.listen(HOOK_PORT, '127.0.0.1', () => {
 });
 
 // --- Spawn Claude ---
-function spawnClaude(sessionId, threadId, message) {
-  // Try resume first; on error, retry with --session-id
-  const doSpawn = (useResume) => {
-    const sessionFlag = useResume ? '--resume' : '--session-id';
-    const args = [
-      '-p',
-      sessionFlag, sessionId,
-      '--dangerously-skip-permissions',
-      '--model', CLAUDE_MODEL,
-      message,
-    ];
+function spawnClaude(threadId, message) {
+  const existingSessionId = sessionMap[threadId];
+  const args = ['-p', '--dangerously-skip-permissions', '--model', CLAUDE_MODEL];
 
-    console.log(`[spawn] ${sessionFlag} ${sessionId} for thread ${threadId}`);
-    const proc = spawn(CLAUDE_BIN, args, {
-      cwd: process.cwd(),
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+  if (existingSessionId) {
+    args.push('--resume', existingSessionId);
+    console.log(`[spawn] --resume ${existingSessionId} for thread ${threadId}`);
+  } else {
+    console.log(`[spawn] new session for thread ${threadId}`);
+  }
 
-    // Track session
-    const channel = client.channels.cache.get(threadId);
-    const typingInterval = setInterval(() => {
-      client.channels.fetch(threadId)
-        .then(ch => ch.sendTyping())
-        .catch(() => {});
-    }, 8000);
+  args.push(message);
 
-    // Send initial typing
-    if (channel) channel.sendTyping().catch(() => {});
+  const proc = spawn(CLAUDE_BIN, args, {
+    cwd: process.cwd(),
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
 
-    sessions.set(sessionId, {
-      threadId,
-      proc,
-      typingInterval,
-      lastFlushedLine: 0,
-      transcriptPath: null,
-      lastMsgRef: null,
-    });
+  const typingInterval = setInterval(() => {
+    client.channels.fetch(threadId).then(ch => ch.sendTyping()).catch(() => {});
+  }, 8000);
+  client.channels.fetch(threadId).then(ch => ch.sendTyping()).catch(() => {});
 
-    // Drain stdout/stderr
-    let stdoutBuf = '';
-    proc.stdout.on('data', () => {}); // hooks handle output, not stdout
-    proc.stderr.on('data', (chunk) => {
-      const msg = chunk.toString();
-      // Detect resume failure
-      if (useResume && msg.includes('No conversation found')) {
-        console.log(`[spawn] resume failed, retrying with --session-id`);
-        clearInterval(typingInterval);
-        sessions.delete(sessionId);
-        proc.kill('SIGKILL');
-        doSpawn(false);
-        return;
-      }
-      if (useResume && msg.includes('already in use')) {
-        console.log(`[spawn] session-id conflict, retrying with --resume`);
-        // Already using resume, this shouldn't happen, but handle gracefully
-      }
-      console.error(`[stderr] ${msg.trim()}`);
-    });
+  inflight.set(threadId, {
+    proc,
+    typingInterval,
+    claudeSessionId: existingSessionId || null,
+    lastFlushedLine: 0,
+    transcriptPath: null,
+    lastMsgRef: null,
+  });
 
-    proc.on('exit', (code) => {
-      console.log(`[exit] session ${sessionId} exited with code ${code}`);
-      // Clean up if hooks didn't fire (e.g., immediate error)
-      const s = sessions.get(sessionId);
-      if (s) {
-        if (s.typingInterval) clearInterval(s.typingInterval);
-        sessions.delete(sessionId);
-      }
-    });
-  };
-
-  doSpawn(true);
+  proc.stdout.on('data', () => {});
+  proc.stderr.on('data', (chunk) => console.error(`[stderr] ${chunk.toString().trim()}`));
+  proc.on('exit', (code) => {
+    console.log(`[exit] thread ${threadId} exited with code ${code}`);
+    const state = inflight.get(threadId);
+    if (state) {
+      if (state.typingInterval) clearInterval(state.typingInterval);
+      inflight.delete(threadId);
+    }
+  });
 }
 
 // --- Attachment handling ---
@@ -249,12 +239,11 @@ async function downloadAttachments(attachments) {
 
 // --- Channel context ---
 async function getChannelContext(channel) {
-  // Get the parent channel (if thread, get parent; if channel, use directly)
   let parent = channel;
   if (channel.isThread()) {
     try { parent = await client.channels.fetch(channel.parentId); } catch { return null; }
   }
-  if (!parent || !parent.name) return null;
+  if (!parent?.name) return null;
 
   const name = parent.name;
   const topic = parent.topic?.trim();
@@ -267,25 +256,22 @@ async function getChannelContext(channel) {
 
 // --- Message handling ---
 async function handleMessage(threadId, content) {
-  const sessionId = threadSessionId(threadId);
-  console.log(`[msg] thread=${threadId} session=${sessionId} "${content.slice(0, 50)}"`);
+  console.log(`[msg] thread=${threadId} "${content.slice(0, 50)}"`);
 
   // Interrupt if busy
-  for (const [sid, s] of sessions) {
-    if (s.threadId === threadId) {
-      console.log(`[interrupt] killing session ${sid} for thread ${threadId}`);
-      s.proc.kill('SIGINT');
-      await new Promise(resolve => {
-        const timeout = setTimeout(() => { s.proc.kill('SIGKILL'); resolve(); }, 5000);
-        s.proc.on('exit', () => { clearTimeout(timeout); resolve(); });
-      });
-      if (s.typingInterval) clearInterval(s.typingInterval);
-      sessions.delete(sid);
-      break;
-    }
+  const existing = inflight.get(threadId);
+  if (existing) {
+    console.log(`[interrupt] killing thread ${threadId}`);
+    existing.proc.kill('SIGINT');
+    await new Promise(resolve => {
+      const timeout = setTimeout(() => { existing.proc.kill('SIGKILL'); resolve(); }, 5000);
+      existing.proc.on('exit', () => { clearTimeout(timeout); resolve(); });
+    });
+    if (existing.typingInterval) clearInterval(existing.typingInterval);
+    inflight.delete(threadId);
   }
 
-  spawnClaude(sessionId, threadId, content);
+  spawnClaude(threadId, content);
 }
 
 // --- Discord events ---
@@ -298,7 +284,6 @@ client.on(Events.MessageCreate, async (message) => {
   if (!allowedUsers.has(message.author.id)) return;
   if (message.guildId !== DISCORD_GUILD_ID) return;
 
-  // Download attachments
   let prompt = message.content || '';
   if (message.attachments.size > 0) {
     const paths = await downloadAttachments(message.attachments);
@@ -307,9 +292,8 @@ client.on(Events.MessageCreate, async (message) => {
     }
   }
 
-  if (!prompt.trim()) return; // skip empty messages with no attachments
+  if (!prompt.trim()) return;
 
-  // Build channel context prefix
   const channelContext = await getChannelContext(message.channel);
   if (channelContext) prompt = channelContext + '\n\n' + prompt;
 
