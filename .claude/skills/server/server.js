@@ -247,6 +247,24 @@ async function downloadAttachments(attachments) {
   return paths;
 }
 
+// --- Channel context ---
+async function getChannelContext(channel) {
+  // Get the parent channel (if thread, get parent; if channel, use directly)
+  let parent = channel;
+  if (channel.isThread()) {
+    try { parent = await client.channels.fetch(channel.parentId); } catch { return null; }
+  }
+  if (!parent || !parent.name) return null;
+
+  const name = parent.name;
+  const topic = parent.topic?.trim();
+
+  if (topic) {
+    return `[Channel: #${name}]\n[Description: ${topic}]\n[System Instruction: If through interaction or research, you notice the channel name or description drifts from the reality on the ground, change one or both, and always ask the user before doing this.]`;
+  }
+  return `[Channel: #${name}]\n[System Instruction: No description exists for this channel. After fielding the user's first interaction, propose a description and update it if approved. Tweak the channel name and/or description whenever the purpose changes significantly, and always ask the user before doing this.]`;
+}
+
 // --- Message handling ---
 async function handleMessage(threadId, content) {
   const sessionId = threadSessionId(threadId);
@@ -290,6 +308,10 @@ client.on(Events.MessageCreate, async (message) => {
   }
 
   if (!prompt.trim()) return; // skip empty messages with no attachments
+
+  // Build channel context prefix
+  const channelContext = await getChannelContext(message.channel);
+  if (channelContext) prompt = channelContext + '\n\n' + prompt;
 
   if (!message.channel.isThread()) {
     try {
