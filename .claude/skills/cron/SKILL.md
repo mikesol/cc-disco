@@ -1,6 +1,6 @@
 ---
 name: cron
-description: Set up scheduled tasks that send messages to Discord threads or channels on a schedule
+description: Anything related to scheduled or recurring tasks — checking what's set up, creating new ones, or modifying existing ones. Triggers on questions like "do we have any recurring tasks?", "is X scheduled?", or "set up a daily job".
 ---
 
 # Cron
