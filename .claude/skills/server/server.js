@@ -143,6 +143,9 @@ const hookServer = createServer((req, res) => {
       }
 
       if (event === 'Stop') {
+        // Stop typing immediately — don't wait for exit
+        if (state.typingInterval) { clearInterval(state.typingInterval); state.typingInterval = null; }
+
         const finalText = data.last_assistant_message || '';
         if (finalText.trim()) {
           const lastMsg = await sendToDiscord(threadId, [finalText]);
