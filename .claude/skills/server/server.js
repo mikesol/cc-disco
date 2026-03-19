@@ -33,8 +33,16 @@ function saveSessionMap() {
 }
 
 // --- In-flight state (keyed by thread ID) ---
-// { proc, typingInterval, lastFlushedLine, transcriptPath, lastMsgRef }
+// { proc, typingInterval, lastFlushedLine, transcriptPath, lastMsgRef, exited, hookDone }
 const inflight = new Map();
+
+function cleanup(threadId) {
+  const state = inflight.get(threadId);
+  if (!state) return;
+  console.log(`[cleanup] thread ${threadId}`);
+  if (state.typingInterval) clearInterval(state.typingInterval);
+  inflight.delete(threadId);
+}
 
 // --- Discord client ---
 const client = new Client({
@@ -144,8 +152,8 @@ const hookServer = createServer((req, res) => {
           await state.lastMsgRef.react('✅').catch(() => {});
         }
 
-        if (state.typingInterval) clearInterval(state.typingInterval);
-        inflight.delete(threadId);
+        state.hookDone = true;
+        if (state.exited) cleanup(threadId);
       }
     } catch (e) {
       console.error(`[hook] error: ${e.message}`);
@@ -194,16 +202,18 @@ function spawnClaude(threadId, message) {
     lastFlushedLine: 0,
     transcriptPath: null,
     lastMsgRef: null,
+    exited: false,
+    hookDone: false,
   });
 
   proc.stdout.on('data', () => {});
   proc.stderr.on('data', (chunk) => console.error(`[stderr] ${chunk.toString().trim()}`));
   proc.on('exit', (code) => {
-    console.log(`[exit] thread ${threadId} exited with code ${code}`);
+    console.log(`[exit] thread ${threadId} code=${code}`);
     const state = inflight.get(threadId);
     if (state) {
-      if (state.typingInterval) clearInterval(state.typingInterval);
-      inflight.delete(threadId);
+      state.exited = true;
+      if (state.hookDone) cleanup(threadId);
     }
   });
 }
