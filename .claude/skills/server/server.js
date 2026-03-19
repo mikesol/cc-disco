@@ -102,9 +102,16 @@ const hookServer = createServer((req, res) => {
       }
       if (!session) console.log(`[hook] no matching session found for ${hookSessionId}`);
 
-      // Store transcript path on first hook
+      // Store transcript path on first hook — skip existing content
       if (session && data.transcript_path && !session.transcriptPath) {
         session.transcriptPath = data.transcript_path;
+        // Initialize lastFlushedLine to current end of transcript
+        // so we only flush NEW assistant text from this turn
+        try {
+          const existingLines = readFileSync(data.transcript_path, 'utf-8').trim().split('\n');
+          session.lastFlushedLine = existingLines.length;
+          console.log(`[hook] transcript initialized, skipping ${existingLines.length} existing lines`);
+        } catch { session.lastFlushedLine = 0; }
       }
 
       if ((event === 'PostToolUse' || event === 'PreToolUse') && session) {
