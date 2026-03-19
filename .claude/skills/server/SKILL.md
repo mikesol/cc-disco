@@ -111,7 +111,9 @@ Hook payload fields used:
 
 ### Transcript flushing
 
-Read the transcript file from `lastFlushedLine` to end. Each line is a JSON object. Extract text from entries where `role === 'assistant'` (check both `entry.message.role` and `entry.role`). Content may be an array of blocks — extract `block.text` where `block.type === 'text'`. Advance `lastFlushedLine` to the new end. Send extracted texts to Discord (2000-char chunks).
+Read the transcript file from `lastFlushedLine` to end. Each line is a JSON object. Extract text from entries where `role === 'assistant'` (check both `entry.message.role` and `entry.role`). Content may be an array of blocks — extract `block.text` where `block.type === 'text'`. Advance `lastFlushedLine` to the new end.
+
+**Each extracted text is sent as its own Discord message** — do not concatenate them. If an individual text exceeds 2000 characters, split it into 2000-char chunks, each sent as a separate message. Update `lastMsgRef` after each send.
 
 ### Typing indicator
 
