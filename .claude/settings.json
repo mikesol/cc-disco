@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Write(.claude/skills/server/server.js)",
+      "Write(package.json)",
+      "Write(.claude/skills/cron/cron-runner.js)",
+      "Bash(npm install*)",
+      "Bash(node*)",
+      "Write(/home/mike/.config/systemd/user/cc-disco.service)"
+    ]
+  }
+}
