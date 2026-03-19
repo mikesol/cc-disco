@@ -63,6 +63,8 @@ function flushTranscript(threadId) {
     const texts = [];
     for (let i = state.lastFlushedLine; i < lines.length; i++) {
       const entry = JSON.parse(lines[i]);
+      const role = entry.message?.role ?? entry.role;
+      if (role !== 'assistant') continue;
       const content = entry.message?.content ?? entry.content;
       if (Array.isArray(content)) {
         for (const block of content) {
