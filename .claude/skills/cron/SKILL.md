@@ -5,15 +5,16 @@ description: Set up scheduled tasks that send messages to Discord threads on a s
 
 # Cron
 
-Set up scheduled tasks that send messages to Discord threads. Use `croner` for in-process scheduling or system crontab — your choice.
+Scheduled tasks post messages to Discord threads on a cron schedule. The server picks them up and routes them to Claude Code like any other message.
 
-## Recommended approach: croner
+## Setup
 
-1. Install: `pnpm add croner`
-2. Create a `cron-runner.ts` in the repo that reads `cron.json` and sends messages to Discord threads via the bot token
-3. Run it alongside the server (or as a separate systemd service)
+1. Install croner: `npm install croner` (in the cc-disco repo)
+2. Create `cron.json` in the repo root (see format below)
+3. Run the cron runner: `node .claude/skills/cron/cron-runner.js`
+4. Optionally install as a systemd service alongside the main server
 
-### cron.json format
+## cron.json format
 
 ```json
 [
@@ -23,25 +24,47 @@ Set up scheduled tasks that send messages to Discord threads. Use `croner` for i
 ```
 
 - `schedule` — standard 5-field cron expression
-- `threadId` — Discord thread ID (right-click thread → Copy Thread ID with Developer Mode on)
-- `message` — the prompt. The bot will process it like any user message in that thread.
+- `threadId` — Discord thread ID (enable Developer Mode in Discord, right-click thread → Copy Thread ID)
+- `message` — the prompt sent to Claude Code via that thread
 
-### Sending a message to a thread
+## How it works
 
-```typescript
-const response = await fetch(`https://discord.com/api/v10/channels/${threadId}/messages`, {
-  method: 'POST',
-  headers: { 'Authorization': `Bot ${token}`, 'Content-Type': 'application/json' },
-  body: JSON.stringify({ content: message }),
-});
-```
+The cron runner posts messages to Discord threads using the bot token. The cc-disco server sees the message arrive in the thread and spawns Claude Code to handle it — same as a user message.
 
-Note: the server ignores bot messages (`message.author.bot` check). The cron runner should post messages with a webhook or use the Discord API directly so messages appear as a user, not the bot. Alternatively, modify the server to allow messages from a specific bot ID for cron purposes.
+**Important:** The server ignores bot messages by default (`message.author.bot` check). The cron runner uses a webhook to post messages so they appear as a user, OR you can modify the server to accept messages from the bot's own user ID for cron purposes.
 
-## Alternative: system crontab
+## Turnkey cron runner
 
-Use `curl` to post to Discord. Store the token securely via `op`:
+A ready-to-use cron runner is at `.claude/skills/cron/cron-runner.js`. It:
+- Reads `cron.json` from the repo root
+- Uses croner to schedule jobs
+- Posts messages to Discord threads via the bot token
+- Reloads `cron.json` on SIGHUP
 
-```bash
-0 7 * * * TOKEN=$(op read "op://vault/Discord Bot Token/password") && curl -s -X POST "https://discord.com/api/v10/channels/THREAD_ID/messages" -H "Authorization: Bot $TOKEN" -H "Content-Type: application/json" -d '{"content":"Morning vibe check"}'
+## Getting a thread ID
+
+1. Enable Developer Mode: User Settings → Advanced → Developer Mode
+2. Right-click a thread → Copy Thread ID
+
+## systemd service (optional)
+
+Create `~/.config/systemd/user/cc-disco-cron.service`:
+
+```ini
+[Unit]
+Description=cc-disco cron runner
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/cc-disco
+EnvironmentFile=-%h/cc-disco/.env
+EnvironmentFile=-/etc/environment
+Environment=HOME=%h
+ExecStart=/usr/bin/node %h/cc-disco/.claude/skills/cron/cron-runner.js
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=default.target
 ```
