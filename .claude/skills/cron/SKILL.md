@@ -7,48 +7,49 @@ description: Set up scheduled tasks that send messages to Discord threads on a s
 
 Scheduled tasks post messages to Discord threads on a cron schedule. The server picks them up and routes them to Claude Code like any other message.
 
-## Setup
+There is no pre-built code — this skill describes exactly what to build. When asked to set up or rebuild the cron runner, generate the files described here.
 
-1. Install croner: `npm install croner` (in the cc-disco repo)
-2. Create `cron.json` in the repo root (see format below)
-3. Run the cron runner: `node .claude/skills/cron/cron-runner.js`
-4. Optionally install as a systemd service alongside the main server
+## Files to generate
+
+| Path | Purpose |
+|------|---------|
+| `.claude/skills/cron/cron-runner.js` | Cron runner (Node.js ESM) |
+
+Install the dependency: `npm install croner`
+
+## Behavioral spec
+
+The cron runner is a single Node.js ESM script. It:
+
+1. Reads `cron.json` from the repo root (parse failure → log and schedule nothing, don't crash)
+2. Schedules each job using `croner`'s `Cron` class
+3. On each fire, POSTs the message to the Discord thread via the REST API:
+   - `POST https://discord.com/api/v10/channels/<threadId>/messages`
+   - Headers: `Authorization: Bot <DISCORD_TOKEN>`, `Content-Type: application/json`
+   - Body: `{ content: job.message }`
+   - Log errors but don't crash
+4. On `SIGHUP`: stop all active crons, reload `cron.json`, reschedule
+
+Env var: `DISCORD_TOKEN` — required, exit with error if missing.
+
+> **Note**: Messages posted by the bot token arrive with `author.bot = true`. The cc-disco server ignores bot messages by default. To have cron messages handled by the server, either use a webhook URL instead of the bot token, or modify the server's `MessageCreate` handler to whitelist the bot's own user ID.
 
 ## cron.json format
 
 ```json
 [
-  { "schedule": "0 7 * * *", "threadId": "123456789", "message": "Morning vibe check" },
+  { "schedule": "0 7 * * *", "threadId": "123456789", "message": "Morning check-in" },
   { "schedule": "0 17 * * *", "threadId": "987654321", "message": "Evening digest" }
 ]
 ```
 
 - `schedule` — standard 5-field cron expression
 - `threadId` — Discord thread ID (enable Developer Mode in Discord, right-click thread → Copy Thread ID)
-- `message` — the prompt sent to Claude Code via that thread
+- `message` — the prompt text posted to the thread
 
-## How it works
+## Systemd service (optional)
 
-The cron runner posts messages to Discord threads using the bot token. The cc-disco server sees the message arrive in the thread and spawns Claude Code to handle it — same as a user message.
-
-**Important:** The server ignores bot messages by default (`message.author.bot` check). The cron runner uses a webhook to post messages so they appear as a user, OR you can modify the server to accept messages from the bot's own user ID for cron purposes.
-
-## Turnkey cron runner
-
-A ready-to-use cron runner is at `.claude/skills/cron/cron-runner.js`. It:
-- Reads `cron.json` from the repo root
-- Uses croner to schedule jobs
-- Posts messages to Discord threads via the bot token
-- Reloads `cron.json` on SIGHUP
-
-## Getting a thread ID
-
-1. Enable Developer Mode: User Settings → Advanced → Developer Mode
-2. Right-click a thread → Copy Thread ID
-
-## systemd service (optional)
-
-Create `~/.config/systemd/user/cc-disco-cron.service`:
+Write `~/.config/systemd/user/cc-disco-cron.service`:
 
 ```ini
 [Unit]
@@ -61,6 +62,7 @@ WorkingDirectory=%h/cc-disco
 EnvironmentFile=-%h/cc-disco/.env
 EnvironmentFile=-/etc/environment
 Environment=HOME=%h
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/usr/bin/node %h/cc-disco/.claude/skills/cron/cron-runner.js
 Restart=on-failure
 RestartSec=15
@@ -68,3 +70,27 @@ RestartSec=15
 [Install]
 WantedBy=default.target
 ```
+
+Then:
+```bash
+systemctl --user daemon-reload
+systemctl --user enable cc-disco-cron
+systemctl --user start cc-disco-cron
+```
+
+To reload jobs without restarting: `kill -HUP $(systemctl --user show -p MainPID --value cc-disco-cron)`
+
+## Ops
+
+```bash
+systemctl --user restart cc-disco-cron
+systemctl --user status cc-disco-cron
+journalctl --user -u cc-disco-cron -f
+```
+
+## Acceptance criteria
+
+1. `node .claude/skills/cron/cron-runner.js` starts without error, logs loaded job count
+2. A job fires at its scheduled time and the message appears in the target Discord thread
+3. Sending `SIGHUP` reloads `cron.json` without restarting the process (logged)
+4. Missing or malformed `cron.json` logs a warning but doesn't crash the runner
