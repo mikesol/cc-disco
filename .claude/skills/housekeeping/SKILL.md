@@ -72,7 +72,21 @@ Document anything worth keeping. Update CLAUDE.md or the relevant SKILL.md. If s
 
 ---
 
-## Step 4: CLAUDE.md audit
+## Step 4: Organizational reflection
+
+Step back and look at the repo as a whole. The goal is to notice where organic growth has created mess — and fix it.
+
+- **Knowledge consolidation**: is related information scattered across multiple files or skills? If so, merge or cross-reference.
+- **Skills**: are any skills redundant, overlapping, or half-finished? Could two be merged into one tighter skill? Is there a skill that used to make sense but no longer reflects how things work?
+- **Structure**: does the directory layout still make sense? Are there files or folders that feel out of place?
+- **Pruning**: is there anything that simply shouldn't exist anymore — dead code, abandoned ideas, outdated knowledge files? Remove it.
+- **Naming**: are things named clearly and consistently?
+
+This step is judgment-driven, not checklist-driven. The question is: if someone came to this repo fresh today, would the layout feel coherent? If not, fix what you can and flag what needs a bigger conversation.
+
+---
+
+## Step 5: CLAUDE.md audit
 
 Read CLAUDE.md from top to bottom. Check for:
 
@@ -85,7 +99,7 @@ Edit CLAUDE.md in place. Keep it light. It is an index and orientation guide, no
 
 ---
 
-## Step 5: Skills audit
+## Step 6: Skills audit
 
 For each skill in `.claude/skills/`:
 
@@ -98,19 +112,19 @@ If a skill is clearly obsolete, remove it and update CLAUDE.md.
 
 ---
 
-## Step 6: Data directory check
+## Step 7: Working files check
 
-```bash
-ls -la data/
-```
+Look for any non-source files in the repo — state files, caches, logs, screenshots, build artifacts, downloaded content — and make sure each is handled correctly:
 
-- **State files** (`bills_state.json`, etc.): are they committed and current?
-- **Stale files**: screenshots, tmp files, or logs that have no ongoing purpose — delete or gitignore them.
-- **Large files**: anything that shouldn't be in git (binaries, large caches)?
+- **Should it be committed?** If it's meaningful persistent state (e.g. deduplication state, config), commit it.
+- **Should it be gitignored?** If it's ephemeral or large, add it to `.gitignore`.
+- **Should it be deleted?** If it has no ongoing purpose, remove it.
+
+There's no assumed directory structure here — scan the whole repo.
 
 ---
 
-## Step 7: Final commit and report
+## Step 8: Final commit and report
 
 Commit any remaining changes:
 
