@@ -68,6 +68,7 @@ Map Discord thread ID → Claude session ID, persisted to `session-map.json` in 
 
 - **New thread**: generate a random UUID, pass `--session-id <uuid>` to claude, save to map *before* spawning
 - **Existing thread**: pass `--resume <session-id>`
+- **Dead session recovery**: If claude exits with stderr containing `No conversation found with session ID`, delete the entry from `session-map.json` and log it. The next message to that thread will start a fresh session. This handles the case where a session ID was saved but claude exited before writing the session to disk (e.g. due to a race on first spawn).
 
 ### Spawning Claude
 
