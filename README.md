@@ -8,20 +8,22 @@ This repo is **code-free** — the server, cron runner, and systemd service are 
 
 1. Clone this repo
 2. Ensure `claude` CLI is installed and authenticated
-3. Fill in env vars (see below) — in `.env` or via your secrets manager
-4. Ask Claude to build the server:
+3. Create a Discord bot and invite it to your server (see [Discord bot setup](#discord-bot-setup) below)
+4. Fill in env vars (see below) — in `.env` or via your secrets manager
+5. Ask Claude to build the server:
 
 ```
 Build the server per the server skill. Write server.js to .claude/skills/server/server.js,
-create package.json in the repo root, and write the systemd service to
-~/.config/systemd/user/cc-disco.service. Then run npm install.
+create package.json in the repo root, write .claude/settings.json with the hook config,
+and write the systemd service to ~/.config/systemd/user/cc-disco.service.
+Then run npm install.
 ```
 
-5. Start it:
+6. Start it:
 
 ```bash
 node .claude/skills/server/server.js
-# or, after systemd install:
+# or, on Linux after systemd install:
 systemctl --user start cc-disco
 ```
 

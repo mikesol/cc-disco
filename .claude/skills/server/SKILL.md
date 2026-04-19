@@ -31,10 +31,31 @@ The cc-disco server routes Discord messages to Claude Code sessions. There is no
 | Path | Purpose |
 |------|---------|
 | `.claude/skills/server/server.js` | Main server (Node.js ESM) |
-| `package.json` | `"type": "module"` + `discord.js` dep |
-| `~/.config/systemd/user/cc-disco.service` | Systemd user service |
+| `package.json` | `"type": "module"` + `discord.js` + `dotenv` deps |
+| `.claude/settings.json` | Hook config so spawned Claude processes POST back to the server |
+| `~/.config/systemd/user/cc-disco.service` | Systemd user service (Linux only) |
 
-Install the dependency: `npm install discord.js`
+Install dependencies: `npm install discord.js dotenv`
+
+### `.claude/settings.json`
+
+This file is **required**. Without it, `claude -p` spawns won't fire hooks and responses will never be relayed to Discord. The hook URLs must match the server's `CC_DISCO_HOOK_PORT` (default `9400`).
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "*", "hooks": [{ "type": "http", "url": "http://127.0.0.1:9400/hooks", "timeout": 5 }] }
+    ],
+    "PostToolUse": [
+      { "matcher": "*", "hooks": [{ "type": "http", "url": "http://127.0.0.1:9400/hooks", "timeout": 5 }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "http", "url": "http://127.0.0.1:9400/hooks", "timeout": 5 }] }
+    ]
+  }
+}
+```
 
 ## Environment variables
 
